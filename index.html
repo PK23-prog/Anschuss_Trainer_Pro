@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Anschuss Trainer Pro</title>
+    <style>
+        body { 
+            font-family: -apple-system, system-ui, sans-serif; 
+            background-color: #121212; 
+            color: white; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            min-height: 100vh; 
+            margin: 0; 
+            padding: 20px; 
+            touch-action: manipulation;
+            transition: background-color 0.4s ease;
+        }
+        
+        body.active-mode { background-color: #001a2c; } 
+
+        .container { 
+            text-align: center; 
+            background: rgba(30, 30, 30, 0.9); 
+            padding: 30px; 
+            border-radius: 25px; 
+            box-shadow: 0 15px 35px rgba(0,0,0,0.6); 
+            width: 100%; 
+            max-width: 400px; 
+        }
+
+        h1 { margin-bottom: 25px; color: #00d4ff; font-size: 1.4rem; text-transform: uppercase; }
+
+        .button-grid { display: grid; grid-template-columns: 1fr; gap: 15px; }
+
+        button { 
+            padding: 22px; 
+            font-size: 1.2rem; 
+            cursor: pointer; 
+            border: none; 
+            border-radius: 15px; 
+            color: white; 
+            font-weight: bold; 
+            transition: transform 0.1s; 
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .btn-duell { background: linear-gradient(135deg, #28a745, #1e7e34); }
+        .btn-8s { background: linear-gradient(135deg, #007bff, #0056b3); }
+        .btn-6s { background: linear-gradient(135deg, #fd7e14, #ff922b); }
+        .btn-4s { background: linear-gradient(135deg, #dc3545, #bd2130); }
+
+        .btn-abort { 
+            background: #444; /* Grau im Ruhezustand */
+            margin-top: 25px; 
+            width: 100%;
+            color: #888;
+            opacity: 0.3;
+        }
+
+        /* Wenn aktiv, wird der Abbruch-Button rot */
+        .btn-abort.active {
+            background: linear-gradient(135deg, #d32f2f, #b71c1c); 
+            color: white;
+            opacity: 1;
+        }
+
+        button:active { transform: scale(0.95); }
+        button:disabled { background: #333 !important; color: #555; opacity: 0.5; }
+
+        #status { margin-top: 25px; color: #ffcc00; font-weight: bold; font-size: 1.3rem; min-height: 1.5em; }
+
+        .volume-control { margin-top: 30px; padding-top: 20px; border-top: 1px solid #333; }
+        input[type=range] { width: 100%; margin: 15px 0; accent-color: #00d4ff; }
+        
+        .info { font-size: 0.8rem; color: #666; margin-top: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Anschuss Trainer</h1>
+    
+    <div class="button-grid">
+        <button class="btn-duell" onclick="startAnschuss('Duell 3/7', 3.0)">Duell 3/7</button>
+        <button class="btn-8s" onclick="startAnschuss('Anschuss 8s', 2.8)">Anschuss 8 Sek</button>
+        <button class="btn-6s" onclick="startAnschuss('Anschuss 6s', 2.0)">Anschuss 6 Sek</button>
+        <button class="btn-4s" onclick="startAnschuss('Anschuss 4s', 1.6)">Anschuss 4 Sek</button>
+    </div>
+
+    <div id="status">Bereit</div>
+
+    <button id="abortBtn" class="btn-abort" onclick="abortSequence()" disabled>ABBRECHEN</button>
+
+    <div class="volume-control">
+        <label>Lautstärke: <span id="volValue">50</span>%</label><br>
+        <input type="range" id="volume" min="0" max="100" value="50" oninput="document.getElementById('volValue').innerText=this.value">
+    </div>
+    
+    <div class="info" id="lock-info">Standby-Schutz: Inaktiv</div>
+</div>
+
+<script>
+    let audioCtx = null;
+    let wakeLock = null;
+    let gainNode = null;
+    let currentOscillators = [];
+    let mainTimeout = null;
+
+    async function requestWakeLock() {
+        if ('wakeLock' in navigator) {
+            try { 
+                wakeLock = await navigator.wakeLock.request('screen');
+                document.getElementById('lock-info').innerText = "Standby-Schutz: AKTIV";
+                document.getElementById('lock-info').style.color = "#00ff00";
+            } catch (err) {}
+        }
+    }
+
+    function playSound(time, freq, duration, type = 'square') {
+        if (!audioCtx) return;
+        
+        if (!gainNode) {
+            gainNode = audioCtx.createGain();
+            gainNode.connect(audioCtx.destination);
+        }
+        
+        const vol = (document.getElementById('volume').value / 100) * 0.4;
+        const osc = audioCtx.createOscillator();
+        const localGain = audioCtx.createGain();
+        
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, time);
+        
+        localGain.gain.setValueAtTime(vol, time);
+        localGain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+        
+        osc.connect(localGain);
+        localGain.connect(gainNode);
+        
+        osc.start(time);
+        osc.stop(time + duration);
+        currentOscillators.push(osc);
+    }
+
+    function abortSequence() {
+        if (gainNode) {
+            gainNode.gain.cancelScheduledValues(0);
+            gainNode.gain.setValueAtTime(0, 0);
+        }
+        
+        currentOscillators.forEach(osc => { try { osc.stop(); } catch(e){} });
+        currentOscillators = [];
+
+        if (mainTimeout) clearTimeout(mainTimeout);
+
+        const status = document.getElementById('status');
+        status.innerText = "ABGEBROCHEN";
+        status.style.color = "#d32f2f";
+        document.body.classList.remove('active-mode');
+        
+        const abortBtn = document.getElementById('abortBtn');
+        abortBtn.disabled = true;
+        abortBtn.classList.remove('active');
+
+        document.querySelectorAll('.button-grid button').forEach(b => b.disabled = false);
+        
+        releaseWakeLock();
+
+        setTimeout(() => {
+            status.innerText = "Bereit";
+            status.style.color = "#ffcc00";
+        }, 2000);
+        
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+    }
+
+    async function releaseWakeLock() {
+        if (wakeLock) {
+            await wakeLock.release();
+            wakeLock = null;
+        }
+        document.getElementById('lock-info').innerText = "Standby-Schutz: Inaktiv";
+        document.getElementById('lock-info').style.color = "#666";
+    }
+
+    async function startAnschuss(name, shotDelay) {
+        if (navigator.vibrate) navigator.vibrate(100);
+
+        // Audio initialisieren
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+        await requestWakeLock();
+
+        const status = document.getElementById('status');
+        const abortBtn = document.getElementById('abortBtn');
+        const buttons = document.querySelectorAll('.button-grid button');
+        
+        buttons.forEach(b => b.disabled = true);
+        
+        // Abbruch-Button aktivieren
+        abortBtn.disabled = false;
+        abortBtn.classList.add('active');
+        
+        document.body.classList.add('active-mode');
+        status.innerText = name + "...";
+        status.style.color = "#ffcc00";
+
+        const now = audioCtx.currentTime;
+        currentOscillators = [];
+        
+        if (gainNode) gainNode.gain.setValueAtTime(1, now);
+
+        // --- Ablauf ---
+        if (navigator.vibrate) setTimeout(() => navigator.vibrate(600), 0);
+        playSound(now, 150, 0.8, 'sawtooth'); 
+        
+        playSound(now + 5, 880, 0.1);
+        playSound(now + 5.15, 880, 0.1);
+        
+        playSound(now + 12, 440, 0.3, 'square'); 
+
+        let totalEndTime = 12;
+        for (let i = 0; i < 5; i++) {
+            let shootTime = 12 + (i * (shotDelay + 7)) + shotDelay;
+            let pauseTime = shootTime + 7;
+            playSound(now + shootTime, 880, 0.2);
+            if (i < 4) playSound(now + pauseTime, 440, 0.2);
+            totalEndTime = pauseTime;
+        }
+
+        mainTimeout = setTimeout(() => {
+            status.innerText = "Bereit";
+            buttons.forEach(b => b.disabled = false);
+            abortBtn.disabled = true;
+            abortBtn.classList.remove('active');
+            document.body.classList.remove('active-mode');
+            releaseWakeLock();
+        }, totalEndTime * 1000 + 500);
+    }
+</script>
+</body>
+</html>
